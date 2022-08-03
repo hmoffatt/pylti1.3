@@ -131,6 +131,6 @@ class ServiceConnector(object):
 
         return {
             'headers': r.headers if case_insensitive_headers else dict(r.headers),
-            'body': r.json() if r.content else None,
+            'body': r.json() if r.content and r.headers['content-type'] == 'application/json' else r.content,
             'next_page_url': next_page_url if next_page_url else None
         }
