@@ -11,6 +11,7 @@ if t.TYPE_CHECKING:
 
     _AssignmentsGradersData = TypedDict('_AssignmentsGradersData', {
         'scope': t.List[Literal['https://purl.imsglobal.org/spec/lti-ags/scope/score',
+                                'https://purl.imsglobal.org/spec/lti-ags/scope/result.readonly',
                                 'https://purl.imsglobal.org/spec/lti-ags/scope/lineitem',
                                 'https://purl.imsglobal.org/spec/lti-ags/scope/lineitem.readonly']],
         'lineitems': str,
@@ -27,18 +28,33 @@ class AssignmentsGradesService(object):
         self._service_connector = service_connector
         self._service_data = service_data
 
-    def put_grade(self, grade, lineitem=None):
-        # type: (Grade, t.Optional[LineItem]) -> _ServiceConnectorResponse
+    def can_read_lineitem(self):
+        return "https://purl.imsglobal.org/spec/lti-ags/scope/lineitem.readonly" in self._service_data['scope']
+
+    def can_create_lineitem(self):
+        return "https://purl.imsglobal.org/spec/lti-ags/scope/lineitem" in self._service_data['scope']
+
+    def can_read_grades(self):
+        return 'https://purl.imsglobal.org/spec/lti-ags/scope/result.readonly' in self._service_data['scope']
+
+    def can_put_grade(self):
+        return "https://purl.imsglobal.org/spec/lti-ags/scope/score" in self._service_data['scope']
+
+    def put_grade(self, grade, lineitem=None, create_default_lineitem=True,
+                  default_lineitem_tag='default'):
+        # type: (Grade, t.Optional[LineItem], bool, str) -> _ServiceConnectorResponse
         """
         Send grade to the LTI platform.
 
         :param grade: Grade instance
         :param lineitem: LineItem instance
+        :param create_default_lineitem: create default lineitem if nothing was found
+        :param default_lineitem_tag: str
         :return: dict with HTTP response body and headers
         """
 
-        if "https://purl.imsglobal.org/spec/lti-ags/scope/score" not in self._service_data['scope']:
-            raise LtiException('Missing required scope')
+        if not self.can_put_grade():
+            raise LtiException("Can't put grade: Missing required scope")
 
         if lineitem and not lineitem.get_id():
             lineitem = self.find_or_create_lineitem(lineitem)
@@ -46,9 +62,12 @@ class AssignmentsGradesService(object):
         elif not lineitem and self._service_data.get('lineitem'):
             score_url = self._service_data.get('lineitem')
         else:
+            if not create_default_lineitem:
+                raise LtiException("Can't find lineitem to put grade")
             if not lineitem:
                 lineitem = LineItem()
-                lineitem.set_label('default')\
+                lineitem.set_label('default') \
+                    .set_tag(default_lineitem_tag)\
                     .set_score_maximum(100)
                 lineitem = self.find_or_create_lineitem(lineitem)
             score_url = lineitem.get_id()
@@ -71,8 +90,8 @@ class AssignmentsGradesService(object):
         :param lineitem_url: endpoint for LTI line item (optional)
         :return: LineItem instance
         """
-        if "https://purl.imsglobal.org/spec/lti-ags/scope/lineitem.readonly" not in self._service_data['scope']:
-            raise LtiException('Missing required scope')
+        if not self.can_read_lineitem():
+            raise LtiException("Can't read lineitem: Missing required scope")
 
         if lineitem_url is None:
             lineitem_url = self._service_data['lineitem']
@@ -92,8 +111,8 @@ class AssignmentsGradesService(object):
         :param lineitems_url: LTI platform's URL (optional)
         :return: tuple in format: (list with line items, next page url)
         """
-        if "https://purl.imsglobal.org/spec/lti-ags/scope/lineitem" not in self._service_data['scope']:
-            raise LtiException('Missing required scope')
+        if not self.can_read_lineitem():
+            raise LtiException("Can't read lineitem: Missing required scope")
 
         if not lineitems_url:
             lineitems_url = self._service_data['lineitems']
@@ -167,13 +186,23 @@ class AssignmentsGradesService(object):
         """
         Find line item by ResourceLinkId.
 
-        :param tag: str
+        :param resource_link_id: str
         :return: LineItem instance or None
         """
         return self.find_lineitem('resourceLinkId', resource_link_id)
 
+    def find_lineitem_by_resource_id(self, resource_id):
+        # type: (str) -> t.Optional[LineItem]
+        """
+        Find line item by Resource ID.
+
+        :param resource_id: str
+        :return: LineItem instance or None
+        """
+        return self.find_lineitem('resourceId', resource_id)
+
     def find_or_create_lineitem(self, new_lineitem, find_by='tag'):
-        # type: (LineItem, Literal['tag', 'id']) -> LineItem
+        # type: (LineItem, Literal['tag', 'resource_link_id', 'resource_id', 'id']) -> LineItem
         """
         Try to find line item using ID or Tag. New lime item will be created if nothing is found.
 
@@ -194,13 +223,21 @@ class AssignmentsGradesService(object):
         elif find_by == 'resource_link_id':
             resource_link_id = new_lineitem.get_resource_link_id()
             if not resource_link_id:
-                raise LtiException('resource_link_id value is not specified')
+                raise LtiException('Resource Link ID value is not specified')
             lineitem = self.find_lineitem_by_resource_link_id(resource_link_id)
+        elif find_by == 'resource_id':
+            resource_id = new_lineitem.get_resource_id()
+            if not resource_id:
+                raise LtiException('Resource ID value is not specified')
+            lineitem = self.find_lineitem_by_resource_id(resource_id)
         else:
             raise LtiException('Invalid "find_by" value: ' + str(find_by))
 
         if lineitem:
             return lineitem
+
+        if not self.can_create_lineitem():
+            raise LtiException("Can't create lineitem: Missing required scope")
 
         created_lineitem = self._service_connector.make_service_request(
             self._service_data['scope'],
@@ -214,28 +251,25 @@ class AssignmentsGradesService(object):
             raise LtiException('Unknown response type received for create line item')
         return LineItem(created_lineitem['body'])
 
-    def get_grades(self, lineitem):
-        # type: (LineItem) -> list
+    def get_grades(self, lineitem=None):
+        # type: (t.Optional[LineItem]) -> list
         """
         Return all grades for the passed line item (across all users enrolled in the line item's context).
 
         :param lineitem: LineItem instance
         :return: list of grades
         """
-        lineitem_id = lineitem.get_id()
-        lineitem_tag = lineitem.get_tag()
+        if not self.can_read_grades():
+            raise LtiException("Can't read grades: Missing required scope")
 
-        find_by = None  # type: t.Optional[Literal['id', 'tag']]
-        if lineitem_id:
-            find_by = 'id'
-        elif lineitem_tag:
-            find_by = 'tag'
+        if lineitem:
+            lineitem_id = lineitem.get_id()
         else:
-            raise LtiException('Received LineItem did not contain a tag or id')
+            lineitem_id = self._service_data.get('lineitem')
 
-        lineitem = self.find_or_create_lineitem(lineitem, find_by=find_by)
-        lineitem_id = lineitem.get_id()
-        assert lineitem_id is not None
+        if not lineitem_id:
+            return []
+
         results_url = self._add_url_path_ending(lineitem_id, 'results')
         scores = self._service_connector.make_service_request(
             self._service_data['scope'],

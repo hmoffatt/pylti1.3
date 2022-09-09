@@ -11,9 +11,9 @@ LTI 1.3 Advantage Tool implementation in Python
     :target: https://www.python.org/
     :alt: Python
 
-.. image:: https://travis-ci.com/dmitry-viskov/pylti1.3.svg?branch=master
+.. image:: https://github.com/dmitry-viskov/pylti1.3/actions/workflows/tox.yml/badge.svg
     :scale: 100%
-    :target: https://travis-ci.com/dmitry-viskov/pylti1.3
+    :target: https://github.com/dmitry-viskov/pylti1.3/actions
     :alt: Build Status
 
 .. image:: https://img.shields.io/github/license/dmitry-viskov/pylti1.3
@@ -469,6 +469,9 @@ Additional methods:
 
     # Find line item by tag
     item = ags.find_lineitem_by_tag(ln_tag)
+
+    # Find line item by resource ID
+    item = ags.find_lineitem_by_resource_id(ln_resource_id)
 
     # Return all grades for the passed line item (across all users enrolled in the line item's context)
     grades = ags.get_grades(ln)
